@@ -1,5 +1,4 @@
-from pydantic import BaseModel
-from pydantic_extra_types.email import EmailStr
+from pydantic import BaseModel, EmailStr
 from typing import List
 
 class Matricula(BaseModel):
@@ -7,6 +6,7 @@ class Matricula(BaseModel):
     curso_id: int
 
     class Config:
+        from_attributes = True
         from_attributes = True
 
 Matriculas = List[Matricula]
