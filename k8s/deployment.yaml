@@ -15,9 +15,11 @@ spec:
       labels:
         app: api-escolar
     spec:
+      restartPolicy: Always
       containers:
       - name: api-escolar
         image: us-central1-docker.pkg.dev/quantum-backup-467623-t3/api-escolar-repo/api-escolar:main-680378a
+        imagePullPolicy: Always
         ports:
         - containerPort: 8000
         env:
@@ -44,26 +46,35 @@ spec:
         volumeMounts:
         - name: database-storage
           mountPath: /app/db
+          subPath: escola.db
         resources:
           requests:
-            memory: "128Mi"
-            cpu: "100m"
-          limits:
             memory: "256Mi"
             cpu: "200m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
         livenessProbe:
           httpGet:
             path: /docs
             port: 8000
           initialDelaySeconds: 60
           periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
         readinessProbe:
           httpGet:
             path: /docs
             port: 8000
           initialDelaySeconds: 60
           periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
       volumes:
       - name: database-storage
         persistentVolumeClaim:
-          claimName: api-escolar-pvc 
+          claimName: api-escolar-pvc
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000 
