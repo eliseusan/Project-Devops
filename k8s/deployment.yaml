@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
       - name: api-escolar
-        image: eliseusan/project-devops:main-c918203
+        image: us-central1-docker.pkg.dev/quantum-backup-467623-t3/api-escolar-repo/api-escolar:main-680378a
         ports:
         - containerPort: 8000
         env:
@@ -55,14 +55,14 @@ spec:
           httpGet:
             path: /docs
             port: 8000
-          initialDelaySeconds: 30
-          periodSeconds: 10
+          initialDelaySeconds: 60
+          periodSeconds: 30
         readinessProbe:
           httpGet:
             path: /docs
             port: 8000
-          initialDelaySeconds: 5
-          periodSeconds: 5
+          initialDelaySeconds: 60
+          periodSeconds: 30
       volumes:
       - name: database-storage
         persistentVolumeClaim:
