@@ -40,7 +40,7 @@ jobs:
       id: meta
       uses: docker/metadata-action@v5
       with:
-        images: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY_ID }}/${{ env.IMAGE_NAME }}
+        images: ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.REPOSITORY_ID }}/${{ secrets.IMAGE_NAME }}
         tags: |
           type=ref,event=branch
           type=ref,event=pr
@@ -63,13 +63,13 @@ jobs:
     - name: Output image info
       run: |
         echo "Image built and pushed successfully!"
-        echo "Repository: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY_ID }}/${{ env.IMAGE_NAME }}"
+        echo "Repository: ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.REPOSITORY_ID }}/${{ secrets.IMAGE_NAME }}"
         echo "Tags: ${{ steps.meta.outputs.tags }}"
         
     - name: Set output for deployment
       id: image-output
       run: |
-        echo "image=${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY_ID }}/${{ env.IMAGE_NAME }}:${{ github.sha }}" >> $GITHUB_OUTPUT
+        echo "image=${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.REPOSITORY_ID }}/${{ secrets.IMAGE_NAME }}:${{ github.sha }}" >> $GITHUB_OUTPUT
         echo "sha=${{ github.sha }}" >> $GITHUB_OUTPUT
 
   deploy-to-gke:
@@ -89,47 +89,53 @@ jobs:
         
     - name: Configure Docker for Artifact Registry
       run: |
-        gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev
+        gcloud auth configure-docker ${{ secrets.GCP_REGION }}-docker.pkg.dev
         
     - name: Get GKE credentials
       run: |
-        gcloud container clusters get-credentials ${{ env.CLUSTER_NAME }} \
-          --region ${{ env.REGION }} \
-          --project ${{ env.PROJECT_ID }}
+        echo "Getting credentials for cluster: ${{ secrets.GKE_CLUSTER_NAME }}"
+        echo "Region: ${{ secrets.GCP_REGION }}"
+        echo "Project: ${{ secrets.GCP_PROJECT_ID }}"
+        
+        gcloud container clusters get-credentials "${{ secrets.GKE_CLUSTER_NAME }}" \
+          --region "${{ secrets.GCP_REGION }}" \
+          --project "${{ secrets.GCP_PROJECT_ID }}"
           
     - name: Create namespace if not exists
       run: |
-        kubectl create namespace ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
+        kubectl create namespace "${{ secrets.NAMESPACE }}" --dry-run=client -o yaml | kubectl apply -f -
         
     - name: Apply Kubernetes manifests
       run: |
         # Aplicar ConfigMap
-        kubectl apply -f k8s/configmap.yaml -n ${{ env.NAMESPACE }}
+        kubectl apply -f k8s/configmap.yaml -n "${{ secrets.NAMESPACE }}"
         
         # Aplicar PVC
-        kubectl apply -f k8s/persistent-volume-claim.yaml -n ${{ env.NAMESPACE }}
+        kubectl apply -f k8s/persistent-volume-claim.yaml -n "${{ secrets.NAMESPACE }}"
         
         # Aplicar Service
-        kubectl apply -f k8s/service.yaml -n ${{ env.NAMESPACE }}
+        kubectl apply -f k8s/service.yaml -n "${{ secrets.NAMESPACE }}"
         
     - name: Deploy application
       run: |
         # Obter a imagem mais recente
-        LATEST_IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY_ID }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
+        LATEST_IMAGE="${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.REPOSITORY_ID }}/${{ secrets.IMAGE_NAME }}:${{ github.sha }}"
+        
+        echo "Deploying image: $LATEST_IMAGE"
         
         # Aplicar o deployment com a nova imagem
         sed "s|IMAGE_PLACEHOLDER|$LATEST_IMAGE|g" k8s/deployment-gke.yaml | kubectl apply -f -
         
         # Aguardar o deployment estar pronto
-        kubectl rollout status deployment/api-escolar -n ${{ env.NAMESPACE }} --timeout=300s
+        kubectl rollout status deployment/api-escolar -n "${{ secrets.NAMESPACE }}" --timeout=300s
         
     - name: Verify deployment
       run: |
         # Verificar se os pods estão rodando
-        kubectl get pods -n ${{ env.NAMESPACE }} -l app=api-escolar
+        kubectl get pods -n "${{ secrets.NAMESPACE }}" -l app=api-escolar
         
         # Verificar status do service
-        kubectl get svc -n ${{ env.NAMESPACE }}
+        kubectl get svc -n "${{ secrets.NAMESPACE }}"
         
     - name: Health check
       run: |
@@ -137,7 +143,7 @@ jobs:
         sleep 30
         
         # Obter o IP/porta do service
-        SERVICE_IP=$(kubectl get svc api-escolar-service -n ${{ env.NAMESPACE }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+        SERVICE_IP=$(kubectl get svc api-escolar-service -n "${{ secrets.NAMESPACE }}" -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
         
         if [ -n "$SERVICE_IP" ]; then
           echo "Service IP: $SERVICE_IP"
@@ -150,9 +156,9 @@ jobs:
     - name: Output deployment info
       run: |
         echo "Deployment concluído com sucesso!"
-        echo "Cluster: ${{ env.CLUSTER_NAME }}"
-        echo "Namespace: ${{ env.NAMESPACE }}"
-        echo "Imagem: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY_ID }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
+        echo "Cluster: ${{ secrets.GKE_CLUSTER_NAME }}"
+        echo "Namespace: ${{ secrets.NAMESPACE }}"
+        echo "Imagem: ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.REPOSITORY_ID }}/${{ secrets.IMAGE_NAME }}:${{ github.sha }}"
         echo "Commit: ${{ github.sha }}"
         echo "Branch: ${{ github.ref_name }}"
         
