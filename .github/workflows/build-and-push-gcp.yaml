@@ -9,7 +9,7 @@ on:
 
 env:
   PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-  REGION: ${{ secrets.GCP_REGION }}
+  REGION: ${{ secrets.GCP_REGION_CLUSTER }}
   CLUSTER_NAME: ${{ secrets.GKE_CLUSTER_NAME }}
   REPOSITORY_ID: api-escolar-repo
   IMAGE_NAME: api-escolar
