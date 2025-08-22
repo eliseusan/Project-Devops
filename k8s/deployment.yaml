@@ -18,7 +18,7 @@ spec:
       restartPolicy: Always
       containers:
       - name: api-escolar
-        image: us-central1-docker.pkg.dev/quantum-backup-467623-t3/api-escolar-repo/api-escolar:main-d69779e
+        image: us-central1-docker.pkg.dev/quantum-backup-467623-t3/api-escolar-repo/api-escolar:main-732d4be
         imagePullPolicy: Always
         ports:
         - containerPort: 8000

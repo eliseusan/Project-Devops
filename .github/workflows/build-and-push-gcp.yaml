@@ -1,4 +1,4 @@
-name: Build and Push to GCP Artifact Registry
+name: Build, Push to GCP and Deploy to GKE
 
 on:
   push:
@@ -10,8 +10,10 @@ on:
 env:
   PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
   REGION: ${{ secrets.GCP_REGION }}
+  CLUSTER_NAME: ${{ secrets.GKE_CLUSTER_NAME }}
   REPOSITORY_ID: api-escolar-repo
   IMAGE_NAME: api-escolar
+  NAMESPACE: gestao-escolar
 
 jobs:
   build-and-push:
@@ -63,5 +65,95 @@ jobs:
         echo "Image built and pushed successfully!"
         echo "Repository: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY_ID }}/${{ env.IMAGE_NAME }}"
         echo "Tags: ${{ steps.meta.outputs.tags }}"
+        
+    - name: Set output for deployment
+      id: image-output
+      run: |
+        echo "image=${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY_ID }}/${{ env.IMAGE_NAME }}:${{ github.sha }}" >> $GITHUB_OUTPUT
+        echo "sha=${{ github.sha }}" >> $GITHUB_OUTPUT
+
+  deploy-to-gke:
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Authenticate to Google Cloud
+      uses: google-github-actions/auth@v2
+      with:
+        credentials_json: ${{ secrets.GCP_SA_KEY }}
+        project_id: ${{ secrets.GCP_PROJECT_ID }}
+        
+    - name: Configure Docker for Artifact Registry
+      run: |
+        gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev
+        
+    - name: Get GKE credentials
+      run: |
+        gcloud container clusters get-credentials ${{ env.CLUSTER_NAME }} \
+          --region ${{ env.REGION }} \
+          --project ${{ env.PROJECT_ID }}
+          
+    - name: Create namespace if not exists
+      run: |
+        kubectl create namespace ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
+        
+    - name: Apply Kubernetes manifests
+      run: |
+        # Aplicar ConfigMap
+        kubectl apply -f k8s/configmap.yaml -n ${{ env.NAMESPACE }}
+        
+        # Aplicar PVC
+        kubectl apply -f k8s/persistent-volume-claim.yaml -n ${{ env.NAMESPACE }}
+        
+        # Aplicar Service
+        kubectl apply -f k8s/service.yaml -n ${{ env.NAMESPACE }}
+        
+    - name: Deploy application
+      run: |
+        # Obter a imagem mais recente
+        LATEST_IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY_ID }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
+        
+        # Aplicar o deployment com a nova imagem
+        sed "s|IMAGE_PLACEHOLDER|$LATEST_IMAGE|g" k8s/deployment-gke.yaml | kubectl apply -f -
+        
+        # Aguardar o deployment estar pronto
+        kubectl rollout status deployment/api-escolar -n ${{ env.NAMESPACE }} --timeout=300s
+        
+    - name: Verify deployment
+      run: |
+        # Verificar se os pods estão rodando
+        kubectl get pods -n ${{ env.NAMESPACE }} -l app=api-escolar
+        
+        # Verificar status do service
+        kubectl get svc -n ${{ env.NAMESPACE }}
+        
+    - name: Health check
+      run: |
+        # Aguardar um pouco para o novo deployment estar pronto
+        sleep 30
+        
+        # Obter o IP/porta do service
+        SERVICE_IP=$(kubectl get svc api-escolar-service -n ${{ env.NAMESPACE }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+        
+        if [ -n "$SERVICE_IP" ]; then
+          echo "Service IP: $SERVICE_IP"
+          # Health check básico
+          curl -f http://$SERVICE_IP/docs || echo "Health check failed"
+        else
+          echo "Service IP ainda não está disponível"
+        fi
+        
+    - name: Output deployment info
+      run: |
+        echo "Deployment concluído com sucesso!"
+        echo "Cluster: ${{ env.CLUSTER_NAME }}"
+        echo "Namespace: ${{ env.NAMESPACE }}"
+        echo "Imagem: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY_ID }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
+        echo "Commit: ${{ github.sha }}"
+        echo "Branch: ${{ github.ref_name }}"
         
  
