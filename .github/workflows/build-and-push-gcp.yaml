@@ -9,8 +9,9 @@ on:
 
 env:
   PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-  REGION: ${{ secrets.GCP_REGION_CLUSTER }}
   CLUSTER_NAME: ${{ secrets.GKE_CLUSTER_NAME }}
+  CLUSTER_ZONE: us-central1-a                  # zona do GKE
+  REGION: us-central1                          # região do Artifact Registry
   REPOSITORY_ID: api-escolar-repo
   IMAGE_NAME: api-escolar
   NAMESPACE: gestao-escolar
@@ -39,7 +40,7 @@ jobs:
         with:
           images: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY_ID }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=sha,prefix=,format=short
+            type=sha,format=short
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
@@ -73,7 +74,7 @@ jobs:
       - name: Get GKE credentials
         run: |
           gcloud container clusters get-credentials ${{ env.CLUSTER_NAME }} \
-            --region ${{ env.REGION }} \
+            --zone ${{ env.CLUSTER_ZONE }} \
             --project ${{ env.PROJECT_ID }}
 
       - name: Create namespace if not exists
@@ -91,10 +92,10 @@ jobs:
           IMAGE="${{ needs.build-and-push.outputs.image }}"
           echo "Usando imagem: $IMAGE"
 
-          # Aplica deployment com placeholder de imagem
+          # Aplica deployment com a imagem correta
           sed "s|IMAGE_PLACEHOLDER|$IMAGE|g" k8s/deployment-gke.yaml | kubectl apply -n ${{ env.NAMESPACE }} -f -
 
-          # Garante atualização da imagem mesmo se já existir
+          # Garante atualização mesmo se já existir
           kubectl set image deployment/api-escolar api-escolar=$IMAGE -n ${{ env.NAMESPACE }}
 
           # Aguarda rollout
@@ -123,6 +124,138 @@ jobs:
         run: |
           echo "✅ Deployment concluído com sucesso!"
           echo "Cluster: ${{ env.CLUSTER_NAME }}"
+          echo "Zone: ${{ env.CLUSTER_ZONE }}"
+          echo "Namespace: ${{ env.NAMESPACE }}"
+          echo "Imagem: ${{ needs.build-and-push.outputs.image }}"
+          echo "Commit: ${{ github.sha }}"
+          echo "Branch: ${{ github.ref_name }}"
+name: Build, Push to GCP and Deploy to GKE
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  CLUSTER_NAME: ${{ secrets.GKE_CLUSTER_NAME }}
+  CLUSTER_ZONE: us-central1-a                  # zona do GKE
+  REGION: us-central1                          # região do Artifact Registry
+  REPOSITORY_ID: api-escolar-repo
+  IMAGE_NAME: api-escolar
+  NAMESPACE: gestao-escolar
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY_ID }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,format=short
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Set output for deployment
+        id: image-output
+        run: |
+          echo "image=${{ steps.meta.outputs.tags }}" >> $GITHUB_OUTPUT
+
+  deploy-to-gke:
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Get GKE credentials
+        run: |
+          gcloud container clusters get-credentials ${{ env.CLUSTER_NAME }} \
+            --zone ${{ env.CLUSTER_ZONE }} \
+            --project ${{ env.PROJECT_ID }}
+
+      - name: Create namespace if not exists
+        run: |
+          kubectl create namespace ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Apply Kubernetes manifests (base)
+        run: |
+          kubectl apply -f k8s/configmap.yaml -n ${{ env.NAMESPACE }}
+          kubectl apply -f k8s/persistent-volume-claim.yaml -n ${{ env.NAMESPACE }}
+          kubectl apply -f k8s/service.yaml -n ${{ env.NAMESPACE }}
+
+      - name: Deploy application
+        run: |
+          IMAGE="${{ needs.build-and-push.outputs.image }}"
+          echo "Usando imagem: $IMAGE"
+
+          # Aplica deployment com a imagem correta
+          sed "s|IMAGE_PLACEHOLDER|$IMAGE|g" k8s/deployment-gke.yaml | kubectl apply -n ${{ env.NAMESPACE }} -f -
+
+          # Garante atualização mesmo se já existir
+          kubectl set image deployment/api-escolar api-escolar=$IMAGE -n ${{ env.NAMESPACE }}
+
+          # Aguarda rollout
+          kubectl rollout status deployment/api-escolar -n ${{ env.NAMESPACE }} --timeout=300s
+
+      - name: Verify deployment
+        run: |
+          kubectl get pods -n ${{ env.NAMESPACE }} -l app=api-escolar
+          kubectl get svc -n ${{ env.NAMESPACE }}
+
+      - name: Health check
+        run: |
+          echo "Aguardando LoadBalancer expor IP..."
+          for i in {1..15}; do
+            SERVICE_IP=$(kubectl get svc api-escolar-service -n ${{ env.NAMESPACE }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+            if [ -n "$SERVICE_IP" ]; then
+              echo "Service IP: $SERVICE_IP"
+              curl -f http://$SERVICE_IP/docs && exit 0
+            fi
+            echo "Tentativa $i: Service IP ainda não disponível..."
+            sleep 20
+          done
+          echo "Health check falhou"; exit 1
+
+      - name: Output deployment info
+        run: |
+          echo "✅ Deployment concluído com sucesso!"
+          echo "Cluster: ${{ env.CLUSTER_NAME }}"
+          echo "Zone: ${{ env.CLUSTER_ZONE }}"
           echo "Namespace: ${{ env.NAMESPACE }}"
           echo "Imagem: ${{ needs.build-and-push.outputs.image }}"
           echo "Commit: ${{ github.sha }}"
